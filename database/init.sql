@@ -63,6 +63,8 @@ CREATE TABLE transactions (
     transaction_type transaction_type_enum NOT NULL,
     status transaction_status_enum DEFAULT 'pending' NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK (from_account_id <> to_account_id)
 );
 
@@ -186,3 +188,211 @@ CREATE INDEX idx_transactions_from_account_id ON transactions (from_account_id);
 CREATE INDEX idx_transactions_to_account_id ON transactions (to_account_id);
 CREATE INDEX idx_transactions_from_to_account ON transactions (from_account_id, to_account_id);
 CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id);
+
+CREATE FUNCTION get_random_user() 
+RETURNS INTEGER AS $$
+DECLARE
+	v_user_id INTEGER;
+BEGIN
+	SELECT
+		id INTO v_user_id
+	FROM
+		users
+	ORDER BY
+		RANDOM()
+	LIMIT 1;
+
+	RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE FUNCTION get_random_bank() 
+RETURNS INTEGER AS $$
+DECLARE
+	v_bank_id INTEGER;
+BEGIN
+	SELECT
+		id INTO v_bank_id
+	FROM
+		banks
+	ORDER BY
+		RANDOM()
+	LIMIT 1;
+
+	RETURN v_bank_id;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION generate_random_bic_code(country VARCHAR(2))
+RETURNS VARCHAR(11) AS $$
+DECLARE
+	v_bic_code VARCHAR(11);
+	v_bank VARCHAR(4);
+	v_location VARCHAR(2);
+	v_branch VARCHAR(3);
+BEGIN
+	v_bank := chr((65 + floor(random() * 26))::INT) || chr((65 + floor(random() * 26))::INT) || chr((65 + floor(random() * 26))::INT) || chr((65 + floor(random() * 26))::INT);
+	v_location := SUBSTRING(MD5(RANDOM()::TEXT), 1, 2);
+	v_branch := chr((65 + floor(random() * 26))::INT) || chr((65 + floor(random() * 26))::INT) || chr((65 + floor(random() * 26))::INT);
+
+	v_bic_code := v_bank || v_location || country;
+
+	IF RANDOM() > 0.5 THEN
+		v_bic_code := v_bic_code || v_branch;
+	END IF;
+
+	RETURN v_bic_code;
+END;
+$$ LANGUAGE plpgsql;
+	
+
+CREATE OR REPLACE PROCEDURE generate_random_banks(nb_banks INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE 
+    v_bic_code VARCHAR(11);
+    v_name VARCHAR(255);
+    v_country country_type;
+    v_now TIMESTAMP;
+BEGIN
+    FOR i IN 1..nb_banks LOOP
+        v_now := CURRENT_TIMESTAMP;
+        v_name := SUBSTRING(MD5(RANDOM()::TEXT), 1, 15);
+        
+        SELECT country INTO v_country
+        FROM (VALUES 
+                ('AT'), ('BE'), ('HR'), ('CY'), ('EE'), ('FI'), 
+                ('FR'), ('DE'), ('GR'), ('IE'), ('IT'), ('LV'), 
+                ('LT'), ('LU'), ('MT'), ('NL'), ('PT'), ('SK'), 
+                ('SI'), ('ES')) AS eurozone_countries(country)
+        ORDER BY RANDOM()
+        LIMIT 1;
+        
+        v_bic_code := generate_random_bic_code(v_country);
+
+        INSERT INTO banks (
+            name, 
+            country, 
+            currency, 
+            bic_code, 
+            established_date,
+            total_assets, 
+            total_liabilities, 
+            created_at, 
+            updated_at
+        ) 
+        VALUES (
+            v_name,
+            v_country,
+            'EUR',
+            v_bic_code,
+            CURRENT_DATE - (RANDOM() * INTERVAL '100 years'),
+            ROUND(CAST((100000000 + RANDOM() * (1000000000 - 100000000)) AS NUMERIC), 2),
+            ROUND(CAST((10000000 + RANDOM() * (1000000000 - 10000000)) AS NUMERIC), 2),
+            v_now,
+            v_now
+        );
+    END LOOP;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE generate_random_users(nb_users INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE 
+    v_first_name VARCHAR(100);
+    v_last_name VARCHAR(100);
+    v_date_of_birth DATE;
+    v_country country_type;
+    v_now TIMESTAMP;
+BEGIN
+    FOR i IN 1..nb_users LOOP
+        v_now := CURRENT_TIMESTAMP;
+        v_first_name := SUBSTRING(MD5(RANDOM()::TEXT), 1, 15);
+        v_last_name := SUBSTRING(MD5(RANDOM()::TEXT), 1, 15);
+        v_date_of_birth := CURRENT_DATE - INTERVAL '18 years' 
+                           - (FLOOR(RANDOM() * (100 - 18 + 1) * 365))::INT * INTERVAL '1 day';
+
+        SELECT country 
+        INTO v_country
+        FROM (VALUES 
+                ('AT'), ('BE'), ('HR'), ('CY'), ('EE'), ('FI'), 
+                ('FR'), ('DE'), ('GR'), ('IE'), ('IT'), ('LV'), 
+                ('LT'), ('LU'), ('MT'), ('NL'), ('PT'), ('SK'), 
+                ('SI'), ('ES')) AS eurozone_countries(country)
+        ORDER BY RANDOM()
+        LIMIT 1;
+
+        INSERT INTO users (
+            first_name, 
+            last_name, 
+            date_of_birth, 
+            country, 
+            nationality, 
+            created_at, 
+            updated_at
+        ) VALUES (
+            v_first_name, 
+            v_last_name, 
+            v_date_of_birth, 
+            v_country, 
+            v_country, 
+            v_now, 
+            v_now
+        );
+    END LOOP;
+END;
+$$;
+
+
+CREATE OR REPLACE PROCEDURE generate_random_accounts(nb_accounts INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE 
+    v_user_id INTEGER;
+    v_bank_id INTEGER;
+    v_balance NUMERIC(18, 2);
+    v_now TIMESTAMP;
+BEGIN
+    FOR i IN 1..nb_accounts LOOP
+        v_now := CURRENT_TIMESTAMP;
+        v_balance := ROUND(CAST((100 + (RANDOM() * (1000000 - 100))) AS NUMERIC), 2);
+        v_user_id := get_random_user();
+        v_bank_id := get_random_bank();
+
+        BEGIN
+            INSERT INTO accounts (
+                user_id, 
+                bank_id, 
+                account_type, 
+                status, 
+                currency, 
+                balance, 
+                created_at, 
+                updated_at, 
+                deleted_at, 
+                is_deleted
+            ) VALUES (
+                v_user_id, 
+                v_bank_id, 
+                'checking', 
+                'active', 
+                'EUR', 
+                v_balance, 
+                v_now, 
+                v_now, 
+                NULL, 
+                FALSE
+            );
+        EXCEPTION
+            WHEN unique_violation THEN
+                RAISE NOTICE 'Duplicate entry found for user_id %, bank_id %;', v_user_id, v_bank_id;
+        END;
+    END LOOP;
+END;
+$$;
+
+CALL generate_random_banks(1000);
+CALL generate_random_users(10000);
+CALL generate_random_accounts(20000);
