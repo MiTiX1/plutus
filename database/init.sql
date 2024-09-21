@@ -63,8 +63,6 @@ CREATE TABLE transactions (
     transaction_type transaction_type_enum NOT NULL,
     status transaction_status_enum DEFAULT 'pending' NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK (from_account_id <> to_account_id)
 );
 
