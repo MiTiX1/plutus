@@ -224,6 +224,23 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION get_random_account() 
+RETURNS INTEGER AS $$
+DECLARE
+	v_account_id INTEGER;
+BEGIN
+	SELECT
+		id INTO v_account_id
+	FROM
+		accounts
+	ORDER BY
+		RANDOM()
+	LIMIT 1;
+
+	RETURN v_account_id;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE FUNCTION generate_random_bic_code(country VARCHAR(2))
 RETURNS VARCHAR(11) AS $$
 DECLARE
@@ -353,13 +370,19 @@ DECLARE
     v_user_id INTEGER;
     v_bank_id INTEGER;
     v_balance NUMERIC(18, 2);
-    v_now TIMESTAMP;
+    v_time TIMESTAMP;
 BEGIN
     FOR i IN 1..nb_accounts LOOP
-        v_now := CURRENT_TIMESTAMP;
         v_balance := ROUND(CAST((100 + (RANDOM() * (1000000 - 100))) AS NUMERIC), 2);
         v_user_id := get_random_user();
         v_bank_id := get_random_bank();
+
+        SELECT 
+        (established_date + (RANDOM() * (EXTRACT(EPOCH FROM NOW() - established_date)) * INTERVAL '1 second')) INTO v_time
+        FROM 
+            banks 
+        WHERE 
+            id = v_bank_id;
 
         BEGIN
             INSERT INTO accounts (
@@ -380,8 +403,8 @@ BEGIN
                 'active', 
                 'EUR', 
                 v_balance, 
-                v_now, 
-                v_now, 
+                v_time, 
+                v_time, 
                 NULL, 
                 FALSE
             );
@@ -393,6 +416,85 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE PROCEDURE update_account_amount(account_id INTEGER, amount NUMERIC(18, 2))
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE 
+        accounts
+    SET 
+        balance = balance + amount
+    WHERE
+        id = account_id;
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE generate_random_transactions(nb_transactions INTEGER)
+LANGUAGE plpgsql
+AS $$
+DECLARE 
+    v_from_account_id INTEGER;
+    v_to_account_id INTEGER;
+    v_amount NUMERIC(18, 2);
+    v_status transaction_status_enum;
+    v_timestamp TIMESTAMP;
+BEGIN
+    FOR i IN 1..nb_transactions LOOP
+        v_from_account_id := get_random_account();
+
+        SELECT id INTO v_to_account_id 
+        FROM accounts 
+        WHERE id <> v_from_account_id 
+        ORDER BY RANDOM() 
+        LIMIT 1;
+
+        SELECT ROUND(CAST((1 + (RANDOM() * (balance / 10 - 1))) AS NUMERIC), 2) AS amount INTO v_amount
+        FROM accounts
+        WHERE id = v_from_account_id;
+
+        SELECT created_at + (RANDOM() * (EXTRACT(EPOCH FROM NOW() - created_at)) * INTERVAL '1 second') INTO v_timestamp
+        FROM accounts 
+        WHERE id = v_from_account_id;
+
+        SELECT  status INTO v_status
+        FROM ( SELECT unnest(enum_range(NULL::transaction_status_enum)) as status ) sub 
+        ORDER BY random() 
+        LIMIT 1;
+
+        IF v_status = 'completed' THEN
+            CALL update_account_amount(v_from_account_id, -v_amount);
+            CALL update_account_amount(v_to_account_id, v_amount);
+        ELSIF v_status = 'pending' THEN
+            CALL update_account_amount(v_from_account_id, -v_amount);
+     	END IF;
+
+        INSERT INTO transactions (
+            from_account_id, 
+            to_account_id, 
+            amount, 
+            currency, 
+            transaction_type, 
+            status, 
+            timestamp, 
+            created_at, 
+            updated_at
+        ) VALUES (
+            v_from_account_id, 
+            v_to_account_id, 
+            v_amount, 
+            'EUR', 
+            'transfer', 
+            v_status, 
+            v_timestamp, 
+            v_timestamp, 
+            v_timestamp
+        );
+    END LOOP;
+END;
+$$;
+
+
 CALL generate_random_banks(1000);
 CALL generate_random_users(10000);
 CALL generate_random_accounts(20000);
+CALL generate_random_transactions(10000);
