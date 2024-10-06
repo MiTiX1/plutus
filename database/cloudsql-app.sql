@@ -1,26 +1,16 @@
-\connect plutus;
+CREATE SCHEMA app;
 
-CREATE DOMAIN bic_code_type AS VARCHAR(11)
-    CHECK (CHAR_LENGTH(VALUE) = 8 OR CHAR_LENGTH(VALUE) = 11);
+CREATE TYPE app.account_type_enum AS ENUM ('savings', 'checking', 'credit');
+CREATE TYPE app.account_status_enum AS ENUM ('active', 'closed', 'frozen');
+CREATE TYPE app.transaction_type_enum AS ENUM ('transfer', 'deposit', 'withdrawal');
+CREATE TYPE app.transaction_status_enum AS ENUM ('pending', 'completed', 'failed');
 
-CREATE DOMAIN currency_type AS CHAR(3)
-    CHECK (VALUE ~ '^[A-Z]{3}$');
-
-CREATE DOMAIN country_type AS CHAR(2)
-    CHECK (VALUE ~ '^[A-Z]{2}$');
-
-CREATE TYPE account_type_enum AS ENUM ('savings', 'checking', 'credit');
-CREATE TYPE account_status_enum AS ENUM ('active', 'closed', 'frozen');
-CREATE TYPE transaction_type_enum AS ENUM ('transfer', 'deposit', 'withdrawal');
-CREATE TYPE transaction_status_enum AS ENUM ('pending', 'completed', 'failed');
-CREATE TYPE action_enum AS ENUM ('transfer', 'withdrawal', 'deposit');
-
-CREATE TABLE banks (
+CREATE TABLE app.banks (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    country country_type NOT NULL,
-    currency currency_type NOT NULL, 
-    bic_code bic_code_type NOT NULL,
+    country CHAR(2) NOT NULL CHECK (country ~ '^[A-Z]{2}$'),
+    currency CHAR(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'), 
+    bic_code VARCHAR(11) NOT NULL CHECK (CHAR_LENGTH(bic_code) = 8 OR CHAR_LENGTH(bic_code) = 11),
     established_date DATE NOT NULL,
     total_assets NUMERIC(18, 2) NOT NULL,
     total_liabilities NUMERIC(18, 2) NOT NULL,
@@ -28,78 +18,52 @@ CREATE TABLE banks (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE users (
+CREATE TABLE app.users (
     id SERIAL PRIMARY KEY,
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100) NOT NULL,
     date_of_birth DATE NOT NULL CHECK (date_of_birth <= CURRENT_DATE - INTERVAL '18 years'),
-    country country_type NOT NULL,
-    nationality country_type NOT NULL,
+    country CHAR(2) NOT NULL CHECK (country ~ '^[A-Z]{2}$'),
+    nationality CHAR(2) NOT NULL CHECK (country ~ '^[A-Z]{2}$'),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
 );
 
-CREATE TABLE accounts (
+CREATE TABLE app.accounts (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
-    account_type account_type_enum NOT NULL,
-    currency currency_type NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES app.users(id) ON DELETE CASCADE,
+    bank_id INTEGER NOT NULL REFERENCES app.banks(id) ON DELETE CASCADE,
+    account_type app.account_type_enum NOT NULL,
+    currency CHAR(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'), 
     balance NUMERIC(18, 2) DEFAULT 0.00 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ,
-    status account_status_enum DEFAULT 'active' NOT NULL,
+    status app.account_status_enum DEFAULT 'active' NOT NULL,
     deleted_at TIMESTAMP,
     is_deleted BOOLEAN DEFAULT FALSE,
     UNIQUE (user_id, bank_id, account_type)
 );
 
-CREATE TABLE transactions (
+CREATE TABLE app.transactions (
     id SERIAL PRIMARY KEY,
-    from_account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-    to_account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+    from_account_id INTEGER NOT NULL REFERENCES app.accounts(id) ON DELETE RESTRICT,
+    to_account_id INTEGER NOT NULL REFERENCES app.accounts(id) ON DELETE RESTRICT,
     amount NUMERIC(18, 2) NOT NULL CHECK (amount > 0),
-    currency currency_type NOT NULL,
-    transaction_type transaction_type_enum NOT NULL,
-    status transaction_status_enum DEFAULT 'pending' NOT NULL,
+    currency CHAR(3) NOT NULL CHECK (currency ~ '^[A-Z]{3}$'), 
+    transaction_type app.transaction_type_enum NOT NULL,
+    status app.transaction_status_enum DEFAULT 'pending' NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK (from_account_id <> to_account_id)
 );
 
-CREATE TABLE fees (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    amount NUMERIC(18, 2) NOT NULL CHECK (amount > 0),
-    currency currency_type NOT NULL,
-    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    account_id INTEGER REFERENCES accounts(id),
-    transaction_id INTEGER REFERENCES transactions(id),
-    CHECK (account_id IS NOT NULL OR transaction_id IS NOT NULL)
-);
 
-CREATE TABLE audit_logs (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    action action_enum NOT NULL,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    details JSONB
-);
-
-CREATE TABLE account_history (
-    id SERIAL PRIMARY KEY,
-    account_id INTEGER REFERENCES accounts(id),
-    balance NUMERIC(18, 2),
-    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    change_reason VARCHAR(255)
-);
-
-CREATE OR REPLACE FUNCTION soft_delete_account() 
+CREATE OR REPLACE FUNCTION app.soft_delete_account() 
 RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
-        UPDATE accounts
+        UPDATE app.accounts
         SET is_deleted = TRUE, deleted_at = CURRENT_TIMESTAMP
         WHERE id = OLD.id;
         RETURN OLD;
@@ -109,14 +73,14 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_soft_delete
-BEFORE DELETE ON accounts
-FOR EACH ROW EXECUTE FUNCTION soft_delete_account();
+BEFORE DELETE ON app.accounts
+FOR EACH ROW EXECUTE FUNCTION app.soft_delete_account();
 
 
-CREATE OR REPLACE FUNCTION check_account_currency() 
+CREATE OR REPLACE FUNCTION app.check_account_currency() 
 RETURNS TRIGGER AS $$
 BEGIN
-    IF (SELECT currency FROM banks WHERE id = NEW.bank_id) != NEW.currency THEN
+    IF (SELECT currency FROM app.banks WHERE id = NEW.bank_id) != NEW.currency THEN
         RAISE EXCEPTION 'Account currency % does not match bank currency', NEW.currency;
     END IF;
     RETURN NEW;
@@ -124,36 +88,12 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trigger_check_currency
-BEFORE INSERT OR UPDATE ON accounts
+BEFORE INSERT OR UPDATE ON app.accounts
 FOR EACH ROW
-EXECUTE FUNCTION check_account_currency();
-
-CREATE OR REPLACE FUNCTION check_fee_currency()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.transaction_id IS NOT NULL THEN
-        IF (SELECT currency FROM transactions WHERE id = NEW.transaction_id) != NEW.currency THEN
-            RAISE EXCEPTION 'Fee currency % does not match transaction currency', NEW.currency;
-        END IF;
-    END IF;
-
-    IF NEW.account_id IS NOT NULL THEN
-        IF (SELECT currency FROM accounts WHERE id = NEW.account_id) != NEW.currency THEN
-            RAISE EXCEPTION 'Fee currency % does not match account currency', NEW.currency;
-        END IF;
-    END IF;
-
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trigger_check_fee_currency
-BEFORE INSERT OR UPDATE ON fees
-FOR EACH ROW
-EXECUTE FUNCTION check_fee_currency();
+EXECUTE FUNCTION app.check_account_currency();
 
 
-CREATE OR REPLACE FUNCTION update_timestamp()
+CREATE OR REPLACE FUNCTION app.update_timestamp()
 RETURNS TRIGGER AS $$
 BEGIN
     NEW.updated_at = CURRENT_TIMESTAMP;
@@ -162,34 +102,33 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER set_timestamp
-BEFORE UPDATE ON banks
+BEFORE UPDATE ON app.banks
 FOR EACH ROW
-EXECUTE FUNCTION update_timestamp();
+EXECUTE FUNCTION app.update_timestamp();
 
 CREATE TRIGGER set_timestamp
-BEFORE UPDATE ON users
+BEFORE UPDATE ON app.users
 FOR EACH ROW
-EXECUTE FUNCTION update_timestamp();
+EXECUTE FUNCTION app.update_timestamp();
 
 CREATE TRIGGER set_timestamp
-BEFORE UPDATE ON accounts
+BEFORE UPDATE ON app.accounts
 FOR EACH ROW
-EXECUTE FUNCTION update_timestamp();
+EXECUTE FUNCTION app.update_timestamp();
 
 CREATE TRIGGER set_timestamp
-BEFORE UPDATE ON transactions
+BEFORE UPDATE ON app.transactions
 FOR EACH ROW
-EXECUTE FUNCTION update_timestamp();
+EXECUTE FUNCTION app.update_timestamp();
 
 
-CREATE INDEX idx_accounts_user_id ON accounts (user_id);
-CREATE INDEX idx_accounts_bank_id ON accounts (bank_id);
-CREATE INDEX idx_transactions_from_account_id ON transactions (from_account_id);
-CREATE INDEX idx_transactions_to_account_id ON transactions (to_account_id);
-CREATE INDEX idx_transactions_from_to_account ON transactions (from_account_id, to_account_id);
-CREATE INDEX idx_audit_logs_user_id ON audit_logs (user_id);
+CREATE INDEX idx_accounts_user_id ON app.accounts(user_id);
+CREATE INDEX idx_accounts_bank_id ON app.accounts(bank_id);
+CREATE INDEX idx_transactions_from_account_id ON app.transactions(from_account_id);
+CREATE INDEX idx_transactions_to_account_id ON app.transactions(to_account_id);
+CREATE INDEX idx_transactions_from_to_account ON app.transactions(from_account_id, to_account_id);
 
-CREATE FUNCTION get_random_user() 
+CREATE FUNCTION app.get_random_user() 
 RETURNS INTEGER AS $$
 DECLARE
 	v_user_id INTEGER;
@@ -197,7 +136,7 @@ BEGIN
 	SELECT
 		id INTO v_user_id
 	FROM
-		users
+		app.users
 	ORDER BY
 		RANDOM()
 	LIMIT 1;
@@ -207,7 +146,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE FUNCTION get_random_bank() 
+CREATE FUNCTION app.get_random_bank() 
 RETURNS INTEGER AS $$
 DECLARE
 	v_bank_id INTEGER;
@@ -215,7 +154,7 @@ BEGIN
 	SELECT
 		id INTO v_bank_id
 	FROM
-		banks
+		app.banks
 	ORDER BY
 		RANDOM()
 	LIMIT 1;
@@ -224,7 +163,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION get_random_account() 
+CREATE OR REPLACE FUNCTION app.get_random_account() 
 RETURNS INTEGER AS $$
 DECLARE
 	v_account_id INTEGER;
@@ -232,7 +171,7 @@ BEGIN
 	SELECT
 		id INTO v_account_id
 	FROM
-		accounts
+		app.accounts
 	ORDER BY
 		RANDOM()
 	LIMIT 1;
@@ -241,7 +180,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE FUNCTION generate_random_bic_code(country VARCHAR(2))
+CREATE FUNCTION app.generate_random_bic_code(country VARCHAR(2))
 RETURNS VARCHAR(11) AS $$
 DECLARE
 	v_bic_code VARCHAR(11);
@@ -264,13 +203,13 @@ END;
 $$ LANGUAGE plpgsql;
 	
 
-CREATE OR REPLACE PROCEDURE generate_random_banks(nb_banks INTEGER)
+CREATE OR REPLACE PROCEDURE app.generate_random_banks(nb_banks INTEGER)
 LANGUAGE plpgsql
 AS $$
 DECLARE 
     v_bic_code VARCHAR(11);
     v_name VARCHAR(255);
-    v_country country_type;
+    v_country CHAR(2);
     v_now TIMESTAMP;
 BEGIN
     FOR i IN 1..nb_banks LOOP
@@ -286,9 +225,9 @@ BEGIN
         ORDER BY RANDOM()
         LIMIT 1;
         
-        v_bic_code := generate_random_bic_code(v_country);
+        v_bic_code := app.generate_random_bic_code(v_country);
 
-        INSERT INTO banks (
+        INSERT INTO app.banks (
             name, 
             country, 
             currency, 
@@ -314,14 +253,14 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE generate_random_users(nb_users INTEGER)
+CREATE OR REPLACE PROCEDURE app.generate_random_users(nb_users INTEGER)
 LANGUAGE plpgsql
 AS $$
 DECLARE 
     v_first_name VARCHAR(100);
     v_last_name VARCHAR(100);
     v_date_of_birth DATE;
-    v_country country_type;
+    v_country CHAR(2);
     v_now TIMESTAMP;
 BEGIN
     FOR i IN 1..nb_users LOOP
@@ -341,7 +280,7 @@ BEGIN
         ORDER BY RANDOM()
         LIMIT 1;
 
-        INSERT INTO users (
+        INSERT INTO app.users (
             first_name, 
             last_name, 
             date_of_birth, 
@@ -363,7 +302,7 @@ END;
 $$;
 
 
-CREATE OR REPLACE PROCEDURE generate_random_accounts(nb_accounts INTEGER)
+CREATE OR REPLACE PROCEDURE app.generate_random_accounts(nb_accounts INTEGER)
 LANGUAGE plpgsql
 AS $$
 DECLARE 
@@ -374,18 +313,18 @@ DECLARE
 BEGIN
     FOR i IN 1..nb_accounts LOOP
         v_balance := ROUND(CAST((100 + (RANDOM() * (1000000 - 100))) AS NUMERIC), 2);
-        v_user_id := get_random_user();
-        v_bank_id := get_random_bank();
+        v_user_id := app.get_random_user();
+        v_bank_id := app.get_random_bank();
 
         SELECT 
         (established_date + (RANDOM() * (EXTRACT(EPOCH FROM NOW() - established_date)) * INTERVAL '1 second')) INTO v_time
         FROM 
-            banks 
+            app.banks 
         WHERE 
             id = v_bank_id;
 
         BEGIN
-            INSERT INTO accounts (
+            INSERT INTO app.accounts (
                 user_id, 
                 bank_id, 
                 account_type, 
@@ -416,12 +355,12 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE update_account_amount(account_id INTEGER, amount NUMERIC(18, 2))
+CREATE OR REPLACE PROCEDURE app.update_account_amount(account_id INTEGER, amount NUMERIC(18, 2))
 LANGUAGE plpgsql
 AS $$
 BEGIN
     UPDATE 
-        accounts
+        app.accounts
     SET 
         balance = balance + amount
     WHERE
@@ -429,46 +368,46 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE PROCEDURE generate_random_transactions(nb_transactions INTEGER)
+CREATE OR REPLACE PROCEDURE app.generate_random_transactions(nb_transactions INTEGER)
 LANGUAGE plpgsql
 AS $$
 DECLARE 
     v_from_account_id INTEGER;
     v_to_account_id INTEGER;
     v_amount NUMERIC(18, 2);
-    v_status transaction_status_enum;
+    v_status app.transaction_status_enum;
     v_timestamp TIMESTAMP;
 BEGIN
     FOR i IN 1..nb_transactions LOOP
-        v_from_account_id := get_random_account();
+        v_from_account_id := app.get_random_account();
 
         SELECT id INTO v_to_account_id 
-        FROM accounts 
+        FROM app.accounts 
         WHERE id <> v_from_account_id 
         ORDER BY RANDOM() 
         LIMIT 1;
 
         SELECT ROUND(CAST((1 + (RANDOM() * (balance / 10 - 1))) AS NUMERIC), 2) AS amount INTO v_amount
-        FROM accounts
+        FROM app.accounts
         WHERE id = v_from_account_id;
 
         SELECT created_at + (RANDOM() * (EXTRACT(EPOCH FROM NOW() - created_at)) * INTERVAL '1 second') INTO v_timestamp
-        FROM accounts 
+        FROM app.accounts 
         WHERE id = v_from_account_id;
 
         SELECT  status INTO v_status
-        FROM ( SELECT unnest(enum_range(NULL::transaction_status_enum)) as status ) sub 
+        FROM ( SELECT unnest(enum_range(NULL::app.transaction_status_enum)) as status ) sub 
         ORDER BY random() 
         LIMIT 1;
 
         IF v_status = 'completed' THEN
-            CALL update_account_amount(v_from_account_id, -v_amount);
-            CALL update_account_amount(v_to_account_id, v_amount);
+            CALL app.update_account_amount(v_from_account_id, -v_amount);
+            CALL app.update_account_amount(v_to_account_id, v_amount);
         ELSIF v_status = 'pending' THEN
-            CALL update_account_amount(v_from_account_id, -v_amount);
+            CALL app.update_account_amount(v_from_account_id, -v_amount);
      	END IF;
 
-        INSERT INTO transactions (
+        INSERT INTO app.transactions (
             from_account_id, 
             to_account_id, 
             amount, 
@@ -493,8 +432,14 @@ BEGIN
 END;
 $$;
 
+CREATE PUBLICATION pg_bq_sync FOR TABLE app.banks, app.users, app.accounts, app.transactions;
+ALTER USER postgres WITH replication;
+SELECT PG_CREATE_LOGICAL_REPLICATION_SLOT ('pg_bq_sync', 'pgoutput');
 
-CALL generate_random_banks(1000);
-CALL generate_random_users(10000);
-CALL generate_random_accounts(20000);
-CALL generate_random_transactions(10000);
+CREATE USER datastream WITH REPLICATION IN ROLE
+cloudsqlsuperuser LOGIN PASSWORD 'datastream';
+
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO datastream;
+GRANT USAGE ON SCHEMA app TO datastream;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app
+GRANT SELECT ON TABLES TO datastream;
